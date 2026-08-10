@@ -14,10 +14,11 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.11'   # 改用 3.11，兼容性更好
 
       - name: Install dependencies
         run: |
+          pip install --upgrade pip setuptools
           pip install -r requirements.txt
 
       - name: Run scraper (固定 HKHKG → AEJEA)
@@ -27,7 +28,7 @@ jobs:
             --destination "JEBEL ALI, U.A.E. (AEJEA)" \
             --cargo dry \
             --headless
-        continue-on-error: true   # 即使失敗都繼續去 upload
+        continue-on-error: true
 
       - name: Upload results (即使失敗都上載)
         if: always()
