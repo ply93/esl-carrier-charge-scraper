@@ -1,4 +1,4 @@
+setuptools>=65.0.0
 selenium>=4.15.0
 undetected-chromedriver>=3.5.5
 webdriver-manager>=4.0.1
-pandas>=2.0.0
