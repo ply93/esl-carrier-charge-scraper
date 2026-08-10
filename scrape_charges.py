@@ -35,7 +35,7 @@ def create_driver(headless: bool = True):
         options=options,
         headless=headless,
         use_subprocess=True,
-        version_main=None   # 自動偵測
+        version_main=150      # 強制用 150，配合而家 runner 嘅 Chrome
     )
     return driver
 
