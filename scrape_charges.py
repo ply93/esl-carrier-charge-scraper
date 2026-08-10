@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Emirates Shipping Line - Carrier Charge Finder Scraper
-使用 Chromium + Selenium 自動填表 + 拎結果
+Emirates Shipping Line - Carrier Charge Finder Scraper (GitHub Actions 優化版)
 """
 
 import time
@@ -21,148 +20,127 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from webdriver_manager.chrome import ChromeDriverManager
 
 
-def create_driver(headless: bool = False) -> webdriver.Chrome:
+def create_driver(headless: bool = True) -> webdriver.Chrome:
     options = Options()
-    options.add_argument("--window-size=1400,900")
+    options.add_argument("--window-size=1920,1080")
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-extensions")
+    options.add_argument("--lang=en-US")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
 
     if headless:
         options.add_argument("--headless=new")
 
-    # 用 Chromium / Chrome
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=options)
 
-    # 隱藏 webdriver 特徵
     driver.execute_cdp_cmd(
         "Page.addScriptToEvaluateOnNewDocument",
-        {
-            "source": """
-            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            """
-        },
+        {"source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"}
     )
     return driver
 
 
-def select_port(driver, input_id: str, hidden_id: str, port_text: str, timeout: int = 15):
-    """輸入港口並選擇 autocomplete 建議，確保 hidden code 有值"""
+def select_port(driver, input_id: str, hidden_id: str, port_text: str, timeout: int = 20):
     wait = WebDriverWait(driver, timeout)
+
+    # 先確保 form 容器已經出現
+    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".carrier-charge-finder_container, #carrierChargeFinderForm")))
 
     input_el = wait.until(EC.element_to_be_clickable((By.ID, input_id)))
     input_el.clear()
+    time.sleep(0.5)
     input_el.send_keys(port_text)
+    time.sleep(1.2)
 
-    # 等 jQuery UI autocomplete 出現
     try:
-        # 常見 selector
-        suggestion = wait.until(
-            EC.visibility_of_element_located(
-                (By.CSS_SELECTOR, "ul.ui-autocomplete li.ui-menu-item")
-            )
-        )
-        # 點第一個匹配或者包含文字嘅
+        # 等 autocomplete 出現
+        wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "ul.ui-autocomplete")))
         items = driver.find_elements(By.CSS_SELECTOR, "ul.ui-autocomplete li.ui-menu-item")
+        
         clicked = False
         for item in items:
-            if port_text.upper() in item.text.upper() or item.text.strip():
+            txt = item.text.strip().upper()
+            if port_text.upper() in txt or any(part in txt for part in port_text.upper().split()):
                 item.click()
                 clicked = True
                 break
         if not clicked and items:
             items[0].click()
     except TimeoutException:
-        # 有時直接 Enter 都可以
         input_el.send_keys(Keys.ENTER)
 
-    time.sleep(0.8)
+    time.sleep(1)
 
-    # 確認 hidden code 有值
     hidden = driver.find_element(By.ID, hidden_id)
     code = hidden.get_attribute("value")
     if not code:
-        raise ValueError(f"無法正確選擇港口：{port_text}（hidden code 為空）")
+        # 再試一次
+        input_el.send_keys(Keys.ENTER)
+        time.sleep(1)
+        code = hidden.get_attribute("value")
+
+    if not code:
+        raise ValueError(f"無法正確選擇港口：{port_text}（hidden code 仍然係空）")
+    
     print(f"  ✓ 已選 {port_text} → code = {code}")
     return code
 
 
-def scrape_charges(
-    origin: str,
-    destination: str,
-    cargo_type: str = "dry",
-    headless: bool = False,
-    save_html: bool = True,
-):
+def scrape_charges(origin: str, destination: str, cargo_type: str = "dry", headless: bool = True):
     url = "https://www.emiratesline.com/services-and-information/carrier-charge-finder/"
     driver = create_driver(headless=headless)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     try:
         print(f"打開頁面：{url}")
         driver.get(url)
-        time.sleep(2)
+        
+        # 等頁面基本載入
+        WebDriverWait(driver, 25).until(
+            EC.presence_of_element_located((By.TAG_NAME, "body"))
+        )
+        time.sleep(3)
 
-        # 選擇 Origin
+        # 儲存初始頁面（方便 debug）
+        Path(f"debug_page_{timestamp}.html").write_text(driver.page_source, encoding="utf-8")
+        driver.save_screenshot(f"debug_screenshot_{timestamp}.png")
+        print("已儲存 debug 頁面同截圖")
+
         print(f"選擇 Origin: {origin}")
         select_port(driver, "originPort", "originPortCode", origin)
 
-        # 選擇 Destination
         print(f"選擇 Destination: {destination}")
         select_port(driver, "destinationPort", "destinationPortCode", destination)
 
-        # 選擇 Cargo Type
+        # Cargo Type
         cargo_type = cargo_type.lower()
-        if cargo_type not in ("dry", "reefer"):
-            raise ValueError("cargo_type 只能是 dry 或 reefer")
-
         radio = driver.find_element(By.ID, cargo_type)
         driver.execute_script("arguments[0].click();", radio)
         print(f"  ✓ Cargo Type = {cargo_type}")
 
-        # 撳 Search
+        # 提交
         search_btn = driver.find_element(By.CSS_SELECTOR, "button.primary-btn[type='submit']")
         search_btn.click()
         print("已提交，等待結果...")
+        time.sleep(6)
 
-        # 等結果出現（最多等 12 秒）
-        time.sleep(3)
-        try:
-            WebDriverWait(driver, 10).until(
-                lambda d: len(d.find_elements(By.CSS_SELECTOR, "table, .accordion, .result, [class*='charge']")) > 0
-                or "no charge" in d.page_source.lower()
-            )
-        except TimeoutException:
-            print("⚠ 等唔到明顯結果元素，繼續儲存頁面內容")
+        # 儲存結果
+        html_path = Path(f"result_{timestamp}.html")
+        html_path.write_text(driver.page_source, encoding="utf-8")
+        driver.save_screenshot(f"result_{timestamp}.png")
+        print(f"已儲存結果 → {html_path}")
 
-        # 儲存 HTML（方便之後分析 / 調試）
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        if save_html:
-            html_path = Path(f"result_{timestamp}.html")
-            html_path.write_text(driver.page_source, encoding="utf-8")
-            print(f"已儲存完整頁面 → {html_path}")
-
-        # 嘗試提取表格資料
-        tables = driver.find_elements(By.TAG_NAME, "table")
-        results = []
-        for i, table in enumerate(tables):
-            rows = []
-            for tr in table.find_elements(By.TAG_NAME, "tr"):
-                cells = [td.text.strip() for td in tr.find_elements(By.CSS_SELECTOR, "th, td")]
-                if any(cells):
-                    rows.append(cells)
-            if rows:
-                results.append({"table_index": i, "rows": rows})
-
-        # 另外掃一啲常見收費關鍵字
+        # 簡單提取
         page_text = driver.find_element(By.TAG_NAME, "body").text
         charge_lines = [
-            line.strip()
-            for line in page_text.splitlines()
-            if any(kw in line.lower() for kw in ["fee", "charge", "thc", "b/l", "documentation", "amount", "usd", "aed", "cny"])
-            and len(line.strip()) > 5
+            line.strip() for line in page_text.splitlines()
+            if any(kw in line.lower() for kw in ["fee", "charge", "thc", "b/l", "documentation", "amount", "usd", "aed", "cny", "hkd"])
+            and len(line.strip()) > 4
         ]
 
         output = {
@@ -170,32 +148,43 @@ def scrape_charges(
             "destination": destination,
             "cargo_type": cargo_type,
             "scraped_at": timestamp,
-            "tables": results,
-            "charge_related_lines": charge_lines[:50],  # 最多留 50 行
+            "charge_related_lines": charge_lines[:40],
         }
 
-        # 輸出 JSON
         json_path = Path(f"charges_{timestamp}.json")
         json_path.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"已輸出 JSON → {json_path}")
 
         if charge_lines:
-            print("\n=== 找到嘅收費相關文字（前 15 行）===")
+            print("\n=== 找到嘅收費相關文字 ===")
             for line in charge_lines[:15]:
                 print(" •", line)
+        else:
+            print("⚠ 未明顯搵到收費文字，請下載 result_*.html 同 screenshot 檢查")
 
         return output
+
+    except Exception as e:
+        print(f"\n❌ 發生錯誤：{e}")
+        # 失敗都儲存截圖同 HTML
+        try:
+            driver.save_screenshot(f"error_{timestamp}.png")
+            Path(f"error_{timestamp}.html").write_text(driver.page_source, encoding="utf-8")
+            print("已儲存 error 截圖同 HTML")
+        except:
+            pass
+        raise
 
     finally:
         driver.quit()
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="ESL Carrier Charge Finder Scraper")
-    parser.add_argument("--origin", required=True, help="例如: DUBAI, U.A.E. (AEDXB) 或 JEBEL ALI")
-    parser.add_argument("--destination", required=True, help="例如: HONG KONG SAR, CHINA (HKHKG)")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--origin", required=True)
+    parser.add_argument("--destination", required=True)
     parser.add_argument("--cargo", default="dry", choices=["dry", "reefer"])
-    parser.add_argument("--headless", action="store_true", help="無頭模式")
+    parser.add_argument("--headless", action="store_true")
     args = parser.parse_args()
 
     scrape_charges(
