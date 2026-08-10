@@ -1,0 +1,55 @@
+name: ESL Carrier Charge Scraper
+
+on:
+  workflow_dispatch:   # 手動撳掣跑
+    inputs:
+      origin:
+        description: 'Origin 港口（例如 JEBEL ALI, U.A.E. (AEJEA)）'
+        required: true
+        default: 'JEBEL ALI, U.A.E. (AEJEA)'
+      destination:
+        description: 'Destination 港口（例如 HONG KONG SAR, CHINA (HKHKG)）'
+        required: true
+        default: 'HONG KONG SAR, CHINA (HKHKG)'
+      cargo:
+        description: 'Cargo Type'
+        required: true
+        default: 'dry'
+        type: choice
+        options:
+          - dry
+          - reefer
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run scraper
+        run: |
+          python scrape_charges.py \
+            --origin "${{ github.event.inputs.origin }}" \
+            --destination "${{ github.event.inputs.destination }}" \
+            --cargo "${{ github.event.inputs.cargo }}" \
+            --headless
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: esl-charges-result
+          path: |
+            result_*.html
+            charges_*.json
+          retention-days: 7
